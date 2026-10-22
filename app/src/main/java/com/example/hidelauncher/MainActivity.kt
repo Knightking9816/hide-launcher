@@ -26,7 +26,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.zIndex
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -48,14 +47,12 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.roundToInt
 
-// 应用基础信息
 data class AppInfo(
     val label: String,
     val packageName: String,
     val icon: Drawable
 )
 
-// 桌面元素（可以是普通应用，也可以是文件夹）
 class DesktopItem(
     val id: String, 
     var name: String, 
@@ -82,28 +79,22 @@ fun LauncherScreen() {
     val prefs = remember { context.getSharedPreferences("hide_launcher_v2", Context.MODE_PRIVATE) }
     val density = LocalDensity.current
 
-    // 全局应用字典，用于快速查找图标
     val allAppsMap = remember { loadAllApps(context) }
-    
-    // 桌面数据（支持文件夹）
     val desktopItems = remember { mutableStateListOf<DesktopItem>().apply { addAll(loadDesktopItems(context, prefs, allAppsMap)) } }
     
     var hidden by remember { mutableStateOf(prefs.getStringSet("hidden", emptySet())?.toSet() ?: emptySet()) }
     var locked by remember { mutableStateOf(prefs.getStringSet("locked", emptySet())?.toSet() ?: emptySet()) }
     var allHidden by rememberSaveable { mutableStateOf(false) }
     
-    // 交互状态
     var longPressedItem by remember { mutableStateOf<DesktopItem?>(null) }
     var longPressPosition by remember { mutableStateOf(Offset.Zero) }
     var draggedItemId by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
 
-    // 文件夹操作状态
     var openedFolder by remember { mutableStateOf<DesktopItem?>(null) }
     var renameFolder by remember { mutableStateOf<DesktopItem?>(null) }
-    var mergeSourceItem by remember { mutableStateOf<DesktopItem?>(null) } // 待合并的源
+    var mergeSourceItem by remember { mutableStateOf<DesktopItem?>(null) }
 
-    // 保存与持久化
     fun saveItems() {
         val str = desktopItems.joinToString(";") { "${it.id},${it.name},${it.isFolder},${it.packageNames.joinToString("|")}" }
         prefs.edit().putString("desktop_layout", str).apply()
@@ -111,12 +102,10 @@ fun LauncherScreen() {
     fun persistHidden(newSet: Set<String>) { hidden = newSet; prefs.edit().putStringSet("hidden", newSet).apply() }
     fun persistLocked(newSet: Set<String>) { locked = newSet; prefs.edit().putStringSet("locked", newSet).apply() }
 
-    // 前4个作为Dock
     val dockItems = remember(desktopItems.size) { desktopItems.take(4) }
     val dockIds = dockItems.map { it.id }
     val gridItems = desktopItems.filter { it.id !in dockIds }
     
-    // 分页固定根据 gridItems 总数决定，不受隐藏影响（完美保持分页状态）
     val pageSize = 24
     val pageCount = if (gridItems.isEmpty()) 1 else (gridItems.size + pageSize - 1) / pageSize
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -142,7 +131,6 @@ fun LauncherScreen() {
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             
-            // 顶部时钟
             Column(
                 modifier = Modifier.fillMaxWidth().padding(top = 60.dp, bottom = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -161,7 +149,6 @@ fun LauncherScreen() {
                 Text(text = dateText, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
             }
 
-            // 4x6 网格
             HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
                 val startIndex = page * pageSize
                 val pageItems = gridItems.drop(startIndex).take(pageSize)
@@ -176,28 +163,24 @@ fun LauncherScreen() {
                         val isDragging = item.id == draggedItemId
                         var itemPosition by remember { mutableStateOf(Offset.Zero) }
                         
-                        // 判断是否应该隐藏此项目
                         val isItemLocked = item.packageNames.any { it in locked }
                         val isItemHidden = if (item.isFolder) item.packageNames.all { it in hidden } else item.packageNames[0] in hidden
                         val shouldHide = if (allHidden) !isItemLocked else (isItemHidden && !isItemLocked)
 
                         Box(
                             modifier = Modifier
-                                .zIndex(if (isDragging) 1f else 0f)
+                                // 去除了 zIndex 防止报错
                                 .offset { if (isDragging) IntOffset(dragOffset.x.roundToInt(), dragOffset.y.roundToInt()) else IntOffset.Zero }
                                 .onGloballyPositioned { itemPosition = it.positionInRoot() }
                                 .pointerInput(item.id) {
                                     detectTapGestures(
                                         onTap = {
                                             if (mergeSourceItem != null && mergeSourceItem != item) {
-                                                // 执行合并
                                                 mergeSourceItem?.let { source ->
                                                     if (source.isFolder) {
-                                                        // 把 item 塞进 source 文件夹
                                                         item.packageNames.forEach { source.packageNames.add(it) }
                                                         desktopItems.remove(item)
                                                     } else {
-                                                        // 两个普通应用合成新文件夹
                                                         val newFolder = DesktopItem(
                                                             id = UUID.randomUUID().toString(),
                                                             name = "新建文件夹",
@@ -234,9 +217,8 @@ fun LauncherScreen() {
                                             val currentGlobalIdx = desktopItems.indexOfFirst { it.id == item.id }
                                             if (currentGlobalIdx == -1) return@detectDragGesturesAfterLongPress
                                             
-                                            val desktopIdx = currentGlobalIdx - 4 // 排除 Dock
+                                            val desktopIdx = currentGlobalIdx - 4
                                             
-                                            // 拖拽交互换位
                                             if (dragOffset.x > thresholdX) {
                                                 if (currentGlobalIdx + 1 < desktopItems.size && (desktopIdx + 1) % 4 != 0) {
                                                     java.util.Collections.swap(desktopItems, currentGlobalIdx, currentGlobalIdx + 1)
@@ -277,7 +259,6 @@ fun LauncherScreen() {
                                     isMerging = mergeSourceItem == item
                                 )
                             } else {
-                                // 隐形占位，用于保持原有分页和排版
                                 Box(modifier = Modifier.size(76.dp))
                             }
                         }
@@ -285,7 +266,6 @@ fun LauncherScreen() {
                 }
             }
 
-            // 底部 Dock
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 30.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -309,7 +289,6 @@ fun LauncherScreen() {
             }
         }
 
-        // 悬浮菜单
         longPressedItem?.let { item ->
             val isLocked = item.packageNames.all { it in locked }
             val isHidden = if (item.isFolder) item.packageNames.all { it in hidden } else item.packageNames[0] in hidden
@@ -326,7 +305,6 @@ fun LauncherScreen() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (item.isFolder) {
-                        // 文件夹的菜单：重命名、解散
                         Text(
                             "重命名", color = Color.White, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(20.dp)).clickable { renameFolder = item; longPressedItem = null }.padding(12.dp)
                         )
@@ -342,7 +320,6 @@ fun LauncherScreen() {
                             }.padding(12.dp)
                         )
                     } else {
-                        // 普通应用的菜单：隐藏、锁定、合并
                         if (!isLocked) {
                             Text("隐藏", color = Color.White, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(20.dp)).clickable { 
                                 val pkgs = item.packageNames[0]
@@ -370,7 +347,6 @@ fun LauncherScreen() {
             }
         }
 
-        // 重命名弹窗
         renameFolder?.let { folder ->
             var inputText by remember { mutableStateOf(folder.name) }
             AlertDialog(
@@ -383,7 +359,6 @@ fun LauncherScreen() {
             )
         }
 
-        // 打开文件夹弹窗
         openedFolder?.let { folder ->
             Dialog(onDismissRequest = { openedFolder = null }) {
                 Box(
@@ -419,7 +394,6 @@ fun DesktopItemContent(item: DesktopItem, allAppsMap: Map<String, AppInfo>, isLo
         contentAlignment = Alignment.Center
     ) {
         if (item.isFolder) {
-            // 文件夹样式（堆叠图标）
             Box(
                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
@@ -431,7 +405,6 @@ fun DesktopItemContent(item: DesktopItem, allAppsMap: Map<String, AppInfo>, isLo
                 }
             }
         } else {
-            // 普通应用样式
             val app = allAppsMap[item.packageNames[0]]
             if (app != null) {
                 Image(
@@ -476,7 +449,6 @@ private fun loadDesktopItems(context: Context, prefs: SharedPreferences, allApps
         }
         if (parsed.isNotEmpty()) return parsed
     }
-    // 初始加载所有应用
     return allAppsMap.values.map {
         DesktopItem(it.packageName, it.label, mutableListOf(it.packageName), false)
     }.sortedBy { it.name.lowercase() }
