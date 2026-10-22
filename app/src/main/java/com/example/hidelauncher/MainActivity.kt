@@ -8,41 +8,31 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
+import java.text.SimpleDateFormat
+import java.util.*
 
 data class AppInfo(
     val label: String,
@@ -53,6 +43,13 @@ data class AppInfo(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 关键：让窗口透出壁纸
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER,
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER
+        )
+        
         setContent {
             MaterialTheme {
                 LauncherScreen()
@@ -61,6 +58,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LauncherScreen() {
     val context = LocalContext.current
@@ -76,6 +74,18 @@ fun LauncherScreen() {
     var allHidden by rememberSaveable { mutableStateOf(false) }
     var longPressedApp by remember { mutableStateOf<AppInfo?>(null) }
 
+    // 划分 Dock 栏应用 (取前4个)
+    val dockApps = remember(apps) { apps.take(4) }
+    val dockPackageNames = dockApps.map { it.packageName }.toSet()
+
+    // 桌面上其余的应用
+    val desktopApps = remember(apps) { apps.filter { it.packageName !in dockPackageNames } }
+    
+    // 每页最多放 20 个图标 (5列 x 4行)，留出上方时钟和下方Dock的空间
+    val pageSize = 20
+    val pageCount = if (desktopApps.isEmpty()) 1 else (desktopApps.size + pageSize - 1) / pageSize
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+
     fun persistHidden(newSet: Set<String>) {
         hidden = newSet
         prefs.edit().putStringSet("hidden_packages", newSet).apply()
@@ -86,10 +96,10 @@ fun LauncherScreen() {
         prefs.edit().putStringSet("locked_packages", newSet).apply()
     }
 
+    // 根视图：透明背景，处理双击
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E1116))
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -103,52 +113,66 @@ fun LauncherScreen() {
                 )
             }
     ) {
-        val visibleApps = apps.filter { app ->
-            when {
-                app.packageName in locked -> true
-                allHidden -> false
-                else -> app.packageName !in hidden
-            }
-        }
-
-        if (visibleApps.isEmpty()) {
-            Text(
-                text = "双击空白处恢复图标",
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 13.sp,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(28.dp)
-            )
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(76.dp),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp)
+        if (!allHidden) {
+            // ======= 正常显示状态 =======
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
-                items(visibleApps, key = { it.packageName }) { app ->
-                    AppItem(
-                        app = app,
-                        isLocked = app.packageName in locked,
-                        onClick = { launchApp(context, app.packageName) },
-                        onLongClick = { longPressedApp = app }
-                    )
-                }
-            }
-        }
+                // 顶部时钟
+                ClockWidget(modifier = Modifier.padding(top = 60.dp, bottom = 30.dp))
 
-        if (allHidden) {
+                // 中间应用网格
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f)
+                ) { page ->
+                    val startIndex = page * pageSize
+                    val pageApps = desktopApps.drop(startIndex).take(pageSize)
+                    
+                    val visibleApps = pageApps.filter { app ->
+                        if (app.packageName in locked) true
+                        else app.packageName !in hidden
+                    }
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(5),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp)
+                    ) {
+                        items(visibleApps, key = { it.packageName }) { app ->
+                            AppItem(
+                                app = app,
+                                isLocked = app.packageName in locked,
+                                onClick = { launchApp(context, app.packageName) },
+                                onLongClick = { longPressedApp = app }
+                            )
+                        }
+                    }
+                }
+
+                // 底部 Dock 栏
+                DockBar(
+                    apps = dockApps,
+                    hidden = hidden,
+                    locked = locked,
+                    onAppClick = { launchApp(context, it.packageName) },
+                    onAppLongClick = { longPressedApp = it }
+                )
+            }
+        } else {
+            // ======= 全部隐藏状态 =======
             Text(
                 text = "已全部隐藏 · 双击空白处恢复",
-                color = Color.White.copy(alpha = 0.35f),
-                fontSize = 12.sp,
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 14.sp,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(28.dp)
+                    .padding(bottom = 80.dp)
             )
         }
     }
 
+    // 长按应用弹窗
     longPressedApp?.let { app ->
         val isLocked = app.packageName in locked
         val isHidden = app.packageName in hidden
@@ -160,14 +184,13 @@ fun LauncherScreen() {
                 Column {
                     Text(
                         text = when {
-                            isLocked -> "已锁定：双击全部隐藏时仍会显示"
-                            isHidden -> "已单独隐藏：双击空白处可恢复"
-                            else -> "选择要执行的操作"
+                            isLocked -> "已锁定：双击全隐藏时仍会显示"
+                            isHidden -> "已单独隐藏：双击空白处恢复"
+                            else -> "选择操作"
                         },
-                        fontSize = 13.sp
+                        fontSize = 14.sp
                     )
-                    Spacer(Modifier.height(8.dp))
-
+                    Spacer(Modifier.height(12.dp))
                     TextButton(
                         onClick = {
                             if (isLocked) {
@@ -180,7 +203,7 @@ fun LauncherScreen() {
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (isLocked) "解除锁定" else "锁定（全隐藏时仍显示）")
+                        Text(if (isLocked) "解除锁定" else "锁定应用（防隐藏）")
                     }
 
                     if (!isLocked) {
@@ -204,6 +227,38 @@ fun LauncherScreen() {
     }
 }
 
+@Composable
+fun ClockWidget(modifier: Modifier = Modifier) {
+    var timeText by remember { mutableStateOf("") }
+    var dateText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            val now = Date()
+            timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+            dateText = SimpleDateFormat("M月d日 EEEE", Locale.getDefault()).format(now)
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = timeText,
+            color = Color.White,
+            fontSize = 56.sp,
+            fontWeight = FontWeight.Light
+        )
+        Text(
+            text = dateText,
+            color = Color.White.copy(alpha = 0.8f),
+            fontSize = 14.sp
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppItem(
@@ -213,34 +268,59 @@ fun AppItem(
     onLongClick: () -> Unit
 ) {
     val bitmap = remember(app.packageName) {
-        app.icon.toBitmap(120, 120).asImageBitmap()
+        app.icon.toBitmap(144, 144).asImageBitmap()
     }
 
-    Column(
+    Box(
         modifier = Modifier
-            .padding(6.dp)
+            .padding(8.dp)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.Center
     ) {
         Image(
             bitmap = bitmap,
             contentDescription = app.label,
-            modifier = Modifier.size(48.dp)
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = app.label,
-            color = Color.White,
-            fontSize = 11.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            modifier = Modifier.size(52.dp)
         )
         if (isLocked) {
             Text(
                 text = "🔒",
-                fontSize = 9.sp,
-                color = Color(0xFFFFC107)
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 4.dp, y = 4.dp)
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun DockBar(
+    apps: List<AppInfo>,
+    hidden: Set<String>,
+    locked: Set<String>,
+    onAppClick: (AppInfo) -> Unit,
+    onAppLongClick: (AppInfo) -> Unit
+) {
+    // 半透明背景的 Dock 栏
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 30.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        apps.forEach { app ->
+            // 根据隐藏状态决定是否显示
+            if (app.packageName in locked || app.packageName !in hidden) {
+                AppItem(
+                    app = app,
+                    isLocked = app.packageName in locked,
+                    onClick = { onAppClick(app) },
+                    onLongClick = { onAppLongClick(app) }
+                )
+            }
         }
     }
 }
@@ -257,7 +337,7 @@ private fun loadApps(context: Context): List<AppInfo> {
     return pm.queryIntentActivities(intent, 0)
         .mapNotNull { it.activityInfo?.applicationInfo }
         .distinctBy { it.packageName }
-        .filter { it.packageName != context.packageName }
+        .filter { it.packageName != context.packageName } // 排除自己
         .map {
             AppInfo(
                 label = it.loadLabel(pm).toString(),
