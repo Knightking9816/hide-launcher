@@ -11,8 +11,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -32,7 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -42,7 +42,6 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.roundToInt
@@ -57,6 +56,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // 透出系统壁纸
         window.setFlags(
             android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER,
             android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER
@@ -87,9 +87,11 @@ fun LauncherScreen() {
     }
     var allHidden by rememberSaveable { mutableStateOf(false) }
     
+    // 长按状态
     var longPressedApp by remember { mutableStateOf<AppInfo?>(null) }
-    var longPressOffset by remember { mutableStateOf(Offset.Zero) }
+    var longPressPosition by remember { mutableStateOf(Offset.Zero) } 
 
+    // 拖拽状态
     var draggedPackage by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
 
@@ -125,36 +127,27 @@ fun LauncherScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // 空白处的点击和双击
             .pointerInput(Unit) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var isDoubleTap = false
-                    try {
-                        withTimeout(300) {
-                            awaitFirstDown()
-                            isDoubleTap = true
-                        }
-                    } catch (_: Exception) {}
-                    
-                    if (isDoubleTap) {
+                detectTapGestures(
+                    onDoubleTap = {
                         if (allHidden) {
                             allHidden = false
                             persistHidden(emptySet())
                         } else {
                             allHidden = true
                         }
+                    },
+                    onTap = {
+                        // 点击空白处时，关闭悬浮菜单
+                        if (longPressedApp != null) longPressedApp = null
                     }
-                }
-            }
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null
-            ) {
-                if (longPressedApp != null) longPressedApp = null
+                )
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             
+            // 顶部时钟
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -175,6 +168,7 @@ fun LauncherScreen() {
                 Text(text = dateText, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
             }
 
+            // 中间 4x6 网格
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.weight(1f)
@@ -190,7 +184,8 @@ fun LauncherScreen() {
                 ) {
                     itemsIndexed(pageApps, key = { _, app -> app.packageName }) { _, app ->
                         val isDragging = app.packageName == draggedPackage
-                        
+                        var itemPosition by remember { mutableStateOf(Offset.Zero) }
+
                         Box(
                             modifier = Modifier
                                 .zIndex(if (isDragging) 1f else 0f)
@@ -198,86 +193,77 @@ fun LauncherScreen() {
                                     if (isDragging) IntOffset(dragOffset.x.roundToInt(), dragOffset.y.roundToInt()) 
                                     else IntOffset.Zero 
                                 }
+                                .onGloballyPositioned { coordinates ->
+                                    itemPosition = coordinates.positionInRoot()
+                                }
+                                // 监听点击
                                 .pointerInput(app.packageName) {
-                                    awaitEachGesture {
-                                        val down = awaitFirstDown()
-                                        
-                                        var isLongPress = false
-                                        var isDrag = false
-                                        var currentDragOffset = Offset.Zero
-                                        longPressOffset = down.position
-
-                                        val longPressJob = launch {
-                                            delay(viewConfiguration.longPressTimeoutMillis)
-                                            isLongPress = true
-                                            longPressedApp = app
-                                            draggedPackage = app.packageName 
-                                        }
-                                        
-                                        while (true) {
-                                            val event = awaitPointerEvent()
-                                            val change = event.changes.first()
-                                            
-                                            if (change.changedToUp()) {
-                                                if (!isLongPress && !isDrag) {
-                                                    launchApp(context, app.packageName)
-                                                }
-                                                break
-                                            } else if (change.positionChange() != Offset.Zero) {
-                                                if (isLongPress) {
-                                                    isDrag = true
-                                                    val dragAmount = change.positionChange()
-                                                    currentDragOffset += dragAmount
-                                                    dragOffset = currentDragOffset
-                                                    change.consume()
-                                                    
-                                                    val thresholdX = 40.dp.toPx()
-                                                    val thresholdY = 50.dp.toPx()
-                                                    
-                                                    val currentGlobalIdx = allApps.indexOfFirst { it.packageName == app.packageName }
-                                                    if (currentGlobalIdx == -1) return@awaitEachGesture
-
-                                                    val desktopIdx = currentGlobalIdx - 4
-                                                    
-                                                    if (dragOffset.x > thresholdX) {
-                                                        if (currentGlobalIdx + 1 < allApps.size && (desktopIdx + 1) % 4 != 0) {
-                                                            java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 1)
-                                                            dragOffset = dragOffset.copy(x = dragOffset.x - thresholdX * 2)
-                                                            saveOrder()
-                                                        }
-                                                    } else if (dragOffset.x < -thresholdX) {
-                                                        if (currentGlobalIdx - 1 >= 4 && desktopIdx % 4 != 0) {
-                                                            java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 1)
-                                                            dragOffset = dragOffset.copy(x = dragOffset.x + thresholdX * 2)
-                                                            saveOrder()
-                                                        }
-                                                    }
-                                                    
-                                                    if (dragOffset.y > thresholdY) {
-                                                        if (currentGlobalIdx + 4 < allApps.size) {
-                                                            java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 4)
-                                                            dragOffset = dragOffset.copy(y = dragOffset.y - thresholdY * 2)
-                                                            saveOrder()
-                                                        }
-                                                    } else if (dragOffset.y < -thresholdY) {
-                                                        if (currentGlobalIdx - 4 >= 4) {
-                                                            java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 4)
-                                                            dragOffset = dragOffset.copy(y = dragOffset.y + thresholdY * 2)
-                                                            saveOrder()
-                                                        }
-                                                    }
-                                                } else {
-                                                    longPressJob.cancel()
-                                                }
+                                    detectTapGestures(
+                                        onTap = { 
+                                            if (longPressedApp == null) {
+                                                launchApp(context, app.packageName) 
                                             }
                                         }
-                                        longPressJob.cancel()
-                                        
-                                        if (isDrag) {
+                                    )
+                                }
+                                // 监听长按和拖拽
+                                .pointerInput(app.packageName) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { 
+                                            longPressPosition = itemPosition
+                                            longPressedApp = app // 长按瞬间弹出菜单
+                                            draggedPackage = app.packageName
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragOffset += dragAmount
+                                            
+                                            val thresholdX = 40.dp.toPx()
+                                            val thresholdY = 50.dp.toPx()
+                                            
+                                            val currentGlobalIdx = allApps.indexOfFirst { it.packageName == app.packageName }
+                                            if (currentGlobalIdx == -1) return@detectDragGesturesAfterLongPress
+
+                                            val desktopIdx = currentGlobalIdx - 4
+                                            
+                                            if (dragOffset.x > thresholdX) {
+                                                if (currentGlobalIdx + 1 < allApps.size && (desktopIdx + 1) % 4 != 0) {
+                                                    java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 1)
+                                                    dragOffset = dragOffset.copy(x = dragOffset.x - thresholdX * 2)
+                                                    saveOrder()
+                                                }
+                                            } else if (dragOffset.x < -thresholdX) {
+                                                if (currentGlobalIdx - 1 >= 4 && desktopIdx % 4 != 0) {
+                                                    java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 1)
+                                                    dragOffset = dragOffset.copy(x = dragOffset.x + thresholdX * 2)
+                                                    saveOrder()
+                                                }
+                                            }
+                                            
+                                            if (dragOffset.y > thresholdY) {
+                                                if (currentGlobalIdx + 4 < allApps.size) {
+                                                    java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 4)
+                                                    dragOffset = dragOffset.copy(y = dragOffset.y - thresholdY * 2)
+                                                    saveOrder()
+                                                }
+                                            } else if (dragOffset.y < -thresholdY) {
+                                                if (currentGlobalIdx - 4 >= 4) {
+                                                    java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 4)
+                                                    dragOffset = dragOffset.copy(y = dragOffset.y + thresholdY * 2)
+                                                    saveOrder()
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            draggedPackage = null
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onDragCancel = {
                                             draggedPackage = null
                                             dragOffset = Offset.Zero
                                         }
-                                    }
+                                    )
                                 }
                         ) {
                             AppItemContent(
@@ -289,6 +275,7 @@ fun LauncherScreen() {
                 }
             }
 
+            // 底部 Dock 栏
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -297,32 +284,24 @@ fun LauncherScreen() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 visibleDockApps.forEach { app ->
+                    var itemPosition by remember { mutableStateOf(Offset.Zero) }
                     Box(
                         modifier = Modifier
+                            .onGloballyPositioned { coordinates ->
+                                itemPosition = coordinates.positionInRoot()
+                            }
                             .pointerInput(app.packageName) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    val longPressJob = launch {
-                                        delay(viewConfiguration.longPressTimeoutMillis)
-                                        longPressedApp = app
-                                        longPressOffset = down.position
-                                    }
-                                    
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes.first()
-                                        if (change.changedToUp()) {
-                                            if (longPressJob.isActive) {
-                                                launchApp(context, app.packageName)
-                                            }
-                                            break
-                                        } else if (change.positionChange() != Offset.Zero) {
-                                            longPressJob.cancel()
-                                            break
+                                detectTapGestures(
+                                    onTap = { 
+                                        if (longPressedApp == null) {
+                                            launchApp(context, app.packageName) 
                                         }
+                                    },
+                                    onLongPress = {
+                                        longPressPosition = itemPosition
+                                        longPressedApp = app
                                     }
-                                    longPressJob.cancel()
-                                }
+                                )
                             }
                     ) {
                         AppItemContent(app = app, isLocked = app.packageName in locked)
@@ -331,17 +310,16 @@ fun LauncherScreen() {
             }
         }
 
-        // 删除了底部的“已全部隐藏”文字提示
-
+        // 悬浮透明菜单
         longPressedApp?.let { app ->
             val isLocked = app.packageName in locked
             val isHidden = app.packageName in hidden
 
             Popup(
                 alignment = Alignment.TopStart,
-                offset = androidx.compose.ui.unit.IntOffset(
-                    x = longPressOffset.x.roundToInt(),
-                    y = (longPressOffset.y + 80).roundToInt()
+                offset = IntOffset(
+                    x = longPressPosition.x.roundToInt(),
+                    y = (longPressPosition.y + 80.dp.toPx()).roundToInt() // 出现在图标下方
                 ),
                 onDismissRequest = { longPressedApp = null },
                 properties = PopupProperties(focusable = true)
@@ -352,6 +330,7 @@ fun LauncherScreen() {
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 隐藏按钮
                     if (!isLocked) {
                         Box(
                             modifier = Modifier
@@ -369,14 +348,13 @@ fun LauncherScreen() {
                                 fontSize = 14.sp
                             )
                         }
-                    }
-
-                    if (!isLocked && !isHidden) {
+                        
                         Spacer(modifier = Modifier.width(4.dp))
                         Box(modifier = Modifier.width(1.dp).height(16.dp).background(Color.White.copy(alpha = 0.3f)))
                         Spacer(modifier = Modifier.width(4.dp))
                     }
 
+                    // 锁定按钮
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
