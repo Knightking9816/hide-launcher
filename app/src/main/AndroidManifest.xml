@@ -10,6 +10,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HideLauncher">
 
+        <!-- 声明为桌面 (HOME) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -17,17 +18,16 @@
             android:stateNotNeeded="true"
             android:theme="@style/Theme.HideLauncher">
             
-            <!-- 1. 作为普通图标，可以在应用列表里找到它并打开 -->
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-
-            <!-- 2. 注册为系统主屏幕（桌面），系统设置里一定能识别到 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            
+            <!-- 同时声明为普通应用 (LAUNCHER)，防止某些系统识别错误 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>
