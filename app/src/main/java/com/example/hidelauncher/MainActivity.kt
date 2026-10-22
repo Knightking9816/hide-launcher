@@ -1,19 +1,24 @@
 package com.example.hidelauncher
 
+import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,13 +27,21 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.zIndex
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.math.roundToInt
 
 data class AppInfo(
     val label: String,
@@ -58,9 +71,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LauncherScreen() {
     val context = LocalContext.current
-    val apps = remember { loadApps(context) }
     val prefs = remember { context.getSharedPreferences("hide_launcher", Context.MODE_PRIVATE) }
 
+    // 使用 mutableStateListOf 维护全局应用列表（支持拖拽实时重组）
+    val allApps = remember { mutableStateListOf<AppInfo>().apply { addAll(loadApps(context, prefs)) } }
+    
     var hidden by remember {
         mutableStateOf(prefs.getStringSet("hidden_packages", emptySet())?.toSet() ?: emptySet())
     }
@@ -70,12 +85,27 @@ fun LauncherScreen() {
     var allHidden by rememberSaveable { mutableStateOf(false) }
     var longPressedApp by remember { mutableStateOf<AppInfo?>(null) }
 
+    // 拖拽状态维护
+    var draggedPackage by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+
     // 划分 Dock 栏应用 (取前4个)
-    val dockApps = remember(apps) { apps.take(4) }
-    val dockPackageNames = dockApps.map { it.packageName }.toSet()
+    val dockApps = remember(allApps.size) { allApps.take(4) }
+    val dockPackages = dockApps.map { it.packageName }
 
     // 桌面上其余的应用
-    val desktopApps = remember(apps) { apps.filter { it.packageName !in dockPackageNames } }
+    val desktopApps = allApps.filter { it.packageName !in dockPackages }
+    
+    // 每页 6x4 = 24 个图标
+    val pageSize = 24
+    val pageCount = if (desktopApps.isEmpty()) 1 else (desktopApps.size + pageSize - 1) / pageSize
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+
+    // 强制在 Compose 底层绘制系统壁纸
+    val wallpaperManager = remember { WallpaperManager.getInstance(context) }
+    val wallpaperBitmap = remember { 
+        try { wallpaperManager.drawable?.toBitmap()?.asImageBitmap() } catch (e: Exception) { null } 
+    }
 
     fun persistHidden(newSet: Set<String>) {
         hidden = newSet
@@ -87,10 +117,15 @@ fun LauncherScreen() {
         prefs.edit().putStringSet("locked_packages", newSet).apply()
     }
 
-    // 根视图：透明背景，处理双击
+    fun saveOrder() {
+        val order = allApps.joinToString(",") { it.packageName }
+        prefs.edit().putString("app_order", order).apply()
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(Color.Black) // 垫底色
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -104,30 +139,146 @@ fun LauncherScreen() {
                 )
             }
     ) {
+        // 绘制壁纸
+        wallpaperBitmap?.let {
+            Image(
+                bitmap = it,
+                contentDescription = "壁纸",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+
         if (!allHidden) {
-            // ======= 正常显示状态 =======
-            Column(
-                modifier = Modifier.fillMaxSize()
-            ) {
-                // 中间应用网格 (支持上下滑动)
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(5),
+            Column(modifier = Modifier.fillMaxSize()) {
+                
+                // 顶部时钟
+                Column(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(top = 60.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp)
+                        .fillMaxWidth()
+                        .padding(top = 60.dp, bottom = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    val visibleApps = desktopApps.filter { app ->
+                    var timeText by remember { mutableStateOf("") }
+                    var dateText by remember { mutableStateOf("") }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            val now = Date()
+                            timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+                            dateText = SimpleDateFormat("M月d日 EEEE", Locale.getDefault()).format(now)
+                            kotlinx.coroutines.delay(1000)
+                        }
+                    }
+                    Text(text = timeText, color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Light)
+                    Text(text = dateText, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
+                }
+
+                // 中间 6x4 分页网格
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f)
+                ) { page ->
+                    val startIndex = page * pageSize
+                    val pageApps = desktopApps.drop(startIndex).take(pageSize)
+                    
+                    val visibleApps = pageApps.filter { app ->
                         if (app.packageName in locked) true
                         else app.packageName !in hidden
                     }
-                    items(visibleApps, key = { it.packageName }) { app ->
-                        AppItem(
-                            app = app,
-                            isLocked = app.packageName in locked,
-                            onClick = { launchApp(context, app.packageName) },
-                            onLongClick = { longPressedApp = app }
-                        )
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(6),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        userScrollEnabled = false 
+                    ) {
+                        itemsIndexed(visibleApps, key = { _, app -> app.packageName }) { indexInPage, app ->
+                            val isDragging = app.packageName == draggedPackage
+                            
+                            // 核心拖拽交互逻辑
+                            Box(
+                                modifier = Modifier
+                                    .zIndex(if (isDragging) 1f else 0f)
+                                    .offset { 
+                                        if (isDragging) IntOffset(dragOffset.x.roundToInt(), dragOffset.y.roundToInt()) 
+                                        else IntOffset.Zero 
+                                    }
+                                    .pointerInput(Unit) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = {
+                                                draggedPackage = app.packageName
+                                                dragOffset = Offset.Zero
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragOffset += dragAmount
+                                                
+                                                val thresholdX = 30.dp.toPx()
+                                                val thresholdY = 35.dp.toPx()
+                                                
+                                                // 查找该应用在全局列表中的真实索引
+                                                val currentGlobalIdx = allApps.indexOfFirst { it.packageName == app.packageName }
+                                                if (currentGlobalIdx == -1) return@detectDragGesturesAfterLongPress
+
+                                                // 计算在桌面网格中的相对索引（排除前4个Dock）
+                                                val desktopIdx = currentGlobalIdx - 4
+                                                
+                                                // 左移/右移交换逻辑
+                                                if (dragOffset.x > thresholdX) {
+                                                    if (currentGlobalIdx + 1 < allApps.size && (desktopIdx + 1) % 6 != 0) {
+                                                        java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 1)
+                                                        dragOffset = dragOffset.copy(x = dragOffset.x - thresholdX * 2)
+                                                        saveOrder()
+                                                    }
+                                                } else if (dragOffset.x < -thresholdX) {
+                                                    if (currentGlobalIdx - 1 >= 4 && desktopIdx % 6 != 0) {
+                                                        java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 1)
+                                                        dragOffset = dragOffset.copy(x = dragOffset.x + thresholdX * 2)
+                                                        saveOrder()
+                                                    }
+                                                }
+                                                
+                                                // 上移/下移交换逻辑
+                                                if (dragOffset.y > thresholdY) {
+                                                    if (currentGlobalIdx + 6 < allApps.size) {
+                                                        java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx + 6)
+                                                        dragOffset = dragOffset.copy(y = dragOffset.y - thresholdY * 2)
+                                                        saveOrder()
+                                                    }
+                                                } else if (dragOffset.y < -thresholdY) {
+                                                    if (currentGlobalIdx - 6 >= 4) {
+                                                        java.util.Collections.swap(allApps, currentGlobalIdx, currentGlobalIdx - 6)
+                                                        dragOffset = dragOffset.copy(y = dragOffset.y + thresholdY * 2)
+                                                        saveOrder()
+                                                    }
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                // 如果没有怎么移动，说明用户其实是想长按打开菜单
+                                                if (dragOffset.getDistance() < 15f) {
+                                                    longPressedApp = app
+                                                }
+                                                draggedPackage = null
+                                                dragOffset = Offset.Zero
+                                            },
+                                            onDragCancel = {
+                                                draggedPackage = null
+                                                dragOffset = Offset.Zero
+                                            }
+                                        )
+                                    }
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(
+                                            onTap = { launchApp(context, app.packageName) }
+                                        )
+                                    }
+                            ) {
+                                AppItemContent(
+                                    app = app,
+                                    isLocked = app.packageName in locked
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -141,7 +292,7 @@ fun LauncherScreen() {
                 )
             }
         } else {
-            // ======= 全部隐藏状态 =======
+            // 全部隐藏提示
             Text(
                 text = "已全部隐藏 · 双击空白处恢复",
                 color = Color.White.copy(alpha = 0.6f),
@@ -153,7 +304,7 @@ fun LauncherScreen() {
         }
     }
 
-    // 长按应用弹窗
+    // 长按应用弹窗（隐藏/锁定）
     longPressedApp?.let { app ->
         val isLocked = app.packageName in locked
         val isHidden = app.packageName in hidden
@@ -208,28 +359,20 @@ fun LauncherScreen() {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AppItem(
-    app: AppInfo,
-    isLocked: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
+fun AppItemContent(app: AppInfo, isLocked: Boolean) {
     val bitmap = remember(app.packageName) {
         app.icon.toBitmap(144, 144).asImageBitmap()
     }
 
     Box(
-        modifier = Modifier
-            .padding(8.dp)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = Modifier.padding(6.dp),
         contentAlignment = Alignment.Center
     ) {
         Image(
             bitmap = bitmap,
             contentDescription = app.label,
-            modifier = Modifier.size(52.dp)
+            modifier = Modifier.size(60.dp)
         )
         if (isLocked) {
             Text(
@@ -237,7 +380,7 @@ fun AppItem(
                 fontSize = 12.sp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(bottom = 4.dp, end = 4.dp)
+                    .padding(bottom = 2.dp, end = 2.dp)
             )
         }
     }
@@ -252,23 +395,25 @@ fun DockBar(
     onAppClick: (AppInfo) -> Unit,
     onAppLongClick: (AppInfo) -> Unit
 ) {
-    // 底部固定栏
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 30.dp),
+            .padding(horizontal = 16.dp, vertical = 30.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         apps.forEach { app ->
-            // 根据隐藏状态决定是否显示
             if (app.packageName in locked || app.packageName !in hidden) {
-                AppItem(
-                    app = app,
-                    isLocked = app.packageName in locked,
-                    onClick = { onAppClick(app) },
-                    onLongClick = { onAppLongClick(app) }
-                )
+                Box(
+                    modifier = Modifier.pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { onAppClick(app) },
+                            onLongPress = { onAppLongClick(app) }
+                        )
+                    }
+                ) {
+                    AppItemContent(app = app, isLocked = app.packageName in locked)
+                }
             }
         }
     }
@@ -280,10 +425,10 @@ private fun launchApp(context: Context, packageName: String) {
     context.startActivity(intent)
 }
 
-private fun loadApps(context: Context): List<AppInfo> {
+private fun loadApps(context: Context, prefs: SharedPreferences): List<AppInfo> {
     val pm = context.packageManager
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-    return pm.queryIntentActivities(intent, 0)
+    val allApps = pm.queryIntentActivities(intent, 0)
         .mapNotNull { it.activityInfo?.applicationInfo }
         .distinctBy { it.packageName }
         .filter { it.packageName != context.packageName }
@@ -294,5 +439,23 @@ private fun loadApps(context: Context): List<AppInfo> {
                 icon = it.loadIcon(pm)
             )
         }
-        .sortedBy { it.label.lowercase() }
+    
+    // 读取用户之前保存的自定义排序
+    val savedOrder = prefs.getString("app_order", "")?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()
+    
+    if (savedOrder.isEmpty()) {
+        return allApps.sortedBy { it.label.lowercase() }
+    }
+    
+    val orderedList = mutableListOf<AppInfo>()
+    savedOrder.forEach { pkg ->
+        allApps.find { it.packageName == pkg }?.let { orderedList.add(it) }
+    }
+    // 把新安装、还没在排序列表里的应用放到最后
+    allApps.forEach { app ->
+        if (orderedList.none { it.packageName == app.packageName }) {
+            orderedList.add(app)
+        }
+    }
+    return orderedList
 }
