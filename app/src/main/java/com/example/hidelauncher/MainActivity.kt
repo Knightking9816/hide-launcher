@@ -14,25 +14,21 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
-import java.text.SimpleDateFormat
-import java.util.*
 
 data class AppInfo(
     val label: String,
@@ -80,11 +76,6 @@ fun LauncherScreen() {
 
     // 桌面上其余的应用
     val desktopApps = remember(apps) { apps.filter { it.packageName !in dockPackageNames } }
-    
-    // 每页最多放 20 个图标 (5列 x 4行)，留出上方时钟和下方Dock的空间
-    val pageSize = 20
-    val pageCount = if (desktopApps.isEmpty()) 1 else (desktopApps.size + pageSize - 1) / pageSize
-    val pagerState = rememberPagerState(pageCount = { pageCount })
 
     fun persistHidden(newSet: Set<String>) {
         hidden = newSet
@@ -118,35 +109,25 @@ fun LauncherScreen() {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
-                // 顶部时钟
-                ClockWidget(modifier = Modifier.padding(top = 60.dp, bottom = 30.dp))
-
-                // 中间应用网格
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.weight(1f)
-                ) { page ->
-                    val startIndex = page * pageSize
-                    val pageApps = desktopApps.drop(startIndex).take(pageSize)
-                    
-                    val visibleApps = pageApps.filter { app ->
+                // 中间应用网格 (支持上下滑动)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(5),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(top = 60.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp)
+                ) {
+                    val visibleApps = desktopApps.filter { app ->
                         if (app.packageName in locked) true
                         else app.packageName !in hidden
                     }
-
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(5),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 16.dp)
-                    ) {
-                        items(visibleApps, key = { it.packageName }) { app ->
-                            AppItem(
-                                app = app,
-                                isLocked = app.packageName in locked,
-                                onClick = { launchApp(context, app.packageName) },
-                                onLongClick = { longPressedApp = app }
-                            )
-                        }
+                    items(visibleApps, key = { it.packageName }) { app ->
+                        AppItem(
+                            app = app,
+                            isLocked = app.packageName in locked,
+                            onClick = { launchApp(context, app.packageName) },
+                            onLongClick = { longPressedApp = app }
+                        )
                     }
                 }
 
@@ -227,38 +208,6 @@ fun LauncherScreen() {
     }
 }
 
-@Composable
-fun ClockWidget(modifier: Modifier = Modifier) {
-    var timeText by remember { mutableStateOf("") }
-    var dateText by remember { mutableStateOf("") }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            val now = Date()
-            timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-            dateText = SimpleDateFormat("M月d日 EEEE", Locale.getDefault()).format(now)
-            kotlinx.coroutines.delay(1000)
-        }
-    }
-
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = timeText,
-            color = Color.White,
-            fontSize = 56.sp,
-            fontWeight = FontWeight.Light
-        )
-        Text(
-            text = dateText,
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 14.sp
-        )
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppItem(
@@ -288,7 +237,7 @@ fun AppItem(
                 fontSize = 12.sp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .offset(x = 4.dp, y = 4.dp)
+                    .padding(bottom = 4.dp, end = 4.dp)
             )
         }
     }
@@ -303,7 +252,7 @@ fun DockBar(
     onAppClick: (AppInfo) -> Unit,
     onAppLongClick: (AppInfo) -> Unit
 ) {
-    // 半透明背景的 Dock 栏
+    // 底部固定栏
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -337,7 +286,7 @@ private fun loadApps(context: Context): List<AppInfo> {
     return pm.queryIntentActivities(intent, 0)
         .mapNotNull { it.activityInfo?.applicationInfo }
         .distinctBy { it.packageName }
-        .filter { it.packageName != context.packageName } // 排除自己
+        .filter { it.packageName != context.packageName }
         .map {
             AppInfo(
                 label = it.loadLabel(pm).toString(),
