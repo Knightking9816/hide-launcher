@@ -33,7 +33,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -76,6 +78,7 @@ class MainActivity : ComponentActivity() {
 fun LauncherScreen() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("hide_launcher", Context.MODE_PRIVATE) }
+    val density = LocalDensity.current
 
     val allApps = remember { mutableStateListOf<AppInfo>().apply { addAll(loadApps(context, prefs)) } }
     
@@ -127,7 +130,6 @@ fun LauncherScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // 空白处的点击和双击
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -139,7 +141,6 @@ fun LauncherScreen() {
                         }
                     },
                     onTap = {
-                        // 点击空白处时，关闭悬浮菜单
                         if (longPressedApp != null) longPressedApp = null
                     }
                 )
@@ -196,7 +197,6 @@ fun LauncherScreen() {
                                 .onGloballyPositioned { coordinates ->
                                     itemPosition = coordinates.positionInRoot()
                                 }
-                                // 监听点击
                                 .pointerInput(app.packageName) {
                                     detectTapGestures(
                                         onTap = { 
@@ -206,12 +206,11 @@ fun LauncherScreen() {
                                         }
                                     )
                                 }
-                                // 监听长按和拖拽
                                 .pointerInput(app.packageName) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = { 
                                             longPressPosition = itemPosition
-                                            longPressedApp = app // 长按瞬间弹出菜单
+                                            longPressedApp = app
                                             draggedPackage = app.packageName
                                             dragOffset = Offset.Zero
                                         },
@@ -314,12 +313,15 @@ fun LauncherScreen() {
         longPressedApp?.let { app ->
             val isLocked = app.packageName in locked
             val isHidden = app.packageName in hidden
+            
+            // 使用 density 转换 y 轴的 dp 到 px
+            val yOffsetPx = with(density) { 80.dp.toPx() }
 
             Popup(
                 alignment = Alignment.TopStart,
                 offset = IntOffset(
                     x = longPressPosition.x.roundToInt(),
-                    y = (longPressPosition.y + 80.dp.toPx()).roundToInt() // 出现在图标下方
+                    y = (longPressPosition.y + yOffsetPx).roundToInt()
                 ),
                 onDismissRequest = { longPressedApp = null },
                 properties = PopupProperties(focusable = true)
@@ -330,7 +332,6 @@ fun LauncherScreen() {
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 隐藏按钮
                     if (!isLocked) {
                         Box(
                             modifier = Modifier
@@ -354,7 +355,6 @@ fun LauncherScreen() {
                         Spacer(modifier = Modifier.width(4.dp))
                     }
 
-                    // 锁定按钮
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
