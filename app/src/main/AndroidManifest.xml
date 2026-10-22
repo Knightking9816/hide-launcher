@@ -5,7 +5,7 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:label="隐藏桌面"
         android:supportsRtl="true"
         android:theme="@style/Theme.HideLauncher">
@@ -16,11 +16,18 @@
             android:launchMode="singleTask"
             android:stateNotNeeded="true"
             android:theme="@style/Theme.HideLauncher">
+            
+            <!-- 1. 作为普通图标，可以在应用列表里找到它并打开 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 2. 注册为系统主屏幕（桌面），系统设置里一定能识别到 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>
